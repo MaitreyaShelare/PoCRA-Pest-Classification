@@ -1,129 +1,229 @@
-import os
-import sys
-sys.path.append(os.path.abspath("src"))
+"""
+Training entry point with DDP support.
+Handles all phases: Phase 1 (ArcFace), Phase 2 (Router), Phase 3 (Crop Heads).
+"""
 
+import argparse
+from pathlib import Path
+from typing import Optional
 import torch
-import torch.nn as nn
-from torch.nn.parallel import DistributedDataParallel as DDP
+from omegaconf import DictConfig, OmegaConf
+import os
 
-from core.seed import set_seed
-from core.logger import get_logger
-from core.config import save_config
+from src.core.config import load_config, save_config
+from src.core.reproducibility import set_seed
+from src.core.experiment import create_experiment_dir, save_experiment_metadata
+from src.data.dataset import PestDataset
+from src.data.transforms import get_transforms
+from src.data.datamodule import get_dataloader
+from src.models.backbones.dinov2 import DINOv2Backbone
+from src.models.heads.arcface_head import ArcFaceHead
+from src.models.heads.router_head import RouterHead
+from src.train.phase1 import Phase1Trainer
+from src.train.phase2 import Phase2Trainer
+from src.train.phase3 import Phase3Trainer
+from src.distributed.setup import setup_ddp, cleanup_ddp
 
-from distributed.setup import setup_ddp, cleanup_ddp
-from distributed.utils import is_main_process
 
-from utils.experiment import create_experiment_dir
-from utils.metrics_logger import save_metrics
-
-# ---- Dummy placeholders (replace later) ----
-from models.classifier import ImageClassifier
+def get_ddp_config() -> tuple:
+    """Get DDP rank and world size from environment."""
+    rank = int(os.environ.get("RANK", 0))
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    return rank, world_size, local_rank
 
 
 def main():
-    # -------------------------
-    # Setup DDP
-    # -------------------------
-    local_rank = setup_ddp()
-    device = torch.device(f"cuda:{local_rank}")
+    parser = argparse.ArgumentParser(description="Train pest classification model")
+    parser.add_argument("--config-dir", type=Path, default="configs",
+                        help="Path to configs directory")
+    parser.add_argument("--phase", type=int, choices=[1, 2, 3], default=1,
+                        help="Training phase: 1=ArcFace, 2=Router, 3=Crop heads")
+    parser.add_argument("--overrides", nargs="+", default=[],
+                        help="Config overrides (e.g., learning_rate=1e-4)")
+    parser.add_argument("--resume-from", type=Path, default=None,
+                        help="Resume training from checkpoint")
+    args = parser.parse_args()
 
-    # -------------------------
-    # Config (replace with YAML later)
-    # -------------------------
-    cfg = {
-        "seed": 42,
-        "epochs": 5,
-        "lr": 1e-3,
-        "model": "resnet18",
-        "num_classes": 10,
-        "batch_size": 32
-    }
+    # DDP setup
+    rank, world_size, local_rank = get_ddp_config()
+    device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
+    
+    if world_size > 1:
+        setup_ddp(rank, world_size)
+    
+    # Load config
+    cfg = load_config(args.config_dir, args.overrides)
+    set_seed(cfg.seed)
 
-    set_seed(cfg["seed"])
+    # Create experiment directory (rank 0 only)
+    exp_dir = None
+    if rank == 0:
+        exp_dir = create_experiment_dir(Path(cfg.output_dir), cfg.experiment_name)
+        save_config(cfg, exp_dir)
+        save_experiment_metadata(exp_dir)
+        print(f"\n{'='*60}")
+        print(f"Experiment: {exp_dir.name}")
+        print(f"Phase: {args.phase}")
+        print(f"Config:\n{OmegaConf.to_yaml(cfg)}")
+        print(f"{'='*60}\n")
 
-    # -------------------------
-    # Experiment setup
-    # -------------------------
-    if is_main_process():
-        exp_dir = create_experiment_dir(exp_name=cfg["model"])
-        save_config(cfg, os.path.join(exp_dir, "config.yaml"))
+    # Data
+    train_dataset = PestDataset(
+        labels_csv=Path(cfg.labels_csv),
+        data_root=Path(cfg.data_root),
+        split="train",
+        transform=get_transforms("train"),
+        exclude_ambiguous=True,
+    )
+    val_dataset = PestDataset(
+        labels_csv=Path(cfg.labels_csv),
+        data_root=Path(cfg.data_root),
+        split="val",
+        transform=get_transforms("val"),
+        exclude_ambiguous=True,
+    )
+
+    # Sampler (for distributed training)
+    if world_size > 1:
+        train_sampler = torch.utils.data.distributed.DistributedSampler(
+            train_dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=True,
+            seed=cfg.seed,
+        )
+        val_sampler = torch.utils.data.distributed.DistributedSampler(
+            val_dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=False,
+        )
     else:
-        exp_dir = None
+        train_sampler = None
+        val_sampler = None
 
-    # Broadcast exp_dir to all processes
-    if torch.distributed.is_initialized():
-        exp_dir = [exp_dir]
-        torch.distributed.broadcast_object_list(exp_dir, src=0)
-        exp_dir = exp_dir[0]
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=cfg.train_batch_size,
+        sampler=train_sampler,
+        shuffle=(train_sampler is None),
+        num_workers=cfg.num_workers,
+        pin_memory=True,
+        drop_last=True,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=cfg.val_batch_size,
+        sampler=val_sampler,
+        shuffle=False,
+        num_workers=cfg.num_workers,
+        pin_memory=True,
+    )
 
-    logger = get_logger(os.path.join(exp_dir, "logs"), rank=local_rank)
-
-    # -------------------------
     # Model
-    # -------------------------
-    model = ImageClassifier(cfg["model"], cfg["num_classes"]).to(device)
-    model = DDP(model, device_ids=[local_rank])
+    if args.phase == 1:
+        backbone = DINOv2Backbone(
+            model_name=cfg.model.name,
+            embedding_dim=cfg.model.embedding_dim,
+        ).to(device)
+        
+        head = ArcFaceHead(
+            in_features=cfg.model.embedding_dim,
+            num_classes=cfg.num_pests,
+            margin=cfg.model.arcface.margin,
+            scale=cfg.model.arcface.scale,
+        ).to(device)
+        
+        model = torch.nn.Sequential(backbone, head)
+        trainer_class = Phase1Trainer
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=cfg["lr"])
-    criterion = nn.CrossEntropyLoss()
+    elif args.phase == 2:
+        backbone = DINOv2Backbone(
+            model_name=cfg.model.name,
+            embedding_dim=cfg.model.embedding_dim,
+        ).to(device)
+        backbone.freeze()  # Frozen from Phase 1
+        
+        head = RouterHead(
+            in_features=cfg.model.embedding_dim,
+            num_types=len(cfg.data.image_types),
+        ).to(device)
+        
+        model = torch.nn.Sequential(backbone, head)
+        trainer_class = Phase2Trainer
 
-    scaler = torch.cuda.amp.GradScaler()
+    elif args.phase == 3:
+        backbone = DINOv2Backbone(
+            model_name=cfg.model.name,
+            embedding_dim=cfg.model.embedding_dim,
+        ).to(device)
+        backbone.freeze()
+        
+        # Per-crop heads — dict of linear layers
+        crop_heads = {
+            crop: torch.nn.Linear(cfg.model.embedding_dim, cfg.num_pests)
+            for crop in cfg.data.crops
+        }
+        for head in crop_heads.values():
+            head.to(device)
+        
+        model = (backbone, crop_heads)
+        trainer_class = Phase3Trainer
 
-    # -------------------------
-    # Dummy data (replace later)
-    # -------------------------
-    data = torch.randn(100, 3, 224, 224)
-    labels = torch.randint(0, cfg["num_classes"], (100,))
+    # DDP wrap (if needed)
+    if world_size > 1:
+        model = torch.nn.parallel.DistributedDataParallel(
+            model,
+            device_ids=[local_rank],
+            find_unused_parameters=False,
+        )
 
-    dataset = list(zip(data, labels))
-    loader = torch.utils.data.DataLoader(dataset, batch_size=cfg["batch_size"])
+    # Trainer
+    trainer = trainer_class(
+        cfg=cfg,
+        model=model,
+        device=device,
+        output_dir=exp_dir if rank == 0 else None,
+        rank=rank,
+        world_size=world_size,
+    )
 
-    # -------------------------
-    # Training loop
-    # -------------------------
-    metrics = {}
+    # Resume checkpoint if provided
+    if args.resume_from:
+        trainer.load_checkpoint(args.resume_from)
+        if rank == 0:
+            print(f"Resumed from {args.resume_from}")
 
-    for epoch in range(cfg["epochs"]):
-        model.train()
-        total_loss = 0
+    # Train
+    if rank == 0:
+        print(f"\nStarting Phase {args.phase} training...")
+    
+    for epoch in range(trainer.start_epoch, cfg.train[f"phase{args.phase}"].max_epochs):
+        if world_size > 1:
+            train_sampler.set_epoch(epoch)
+        
+        train_metrics = trainer.train_epoch(train_loader)
+        val_metrics = trainer.validate(val_loader)
 
-        for imgs, targets in loader:
-            imgs = imgs.to(device)
-            targets = targets.to(device)
-
-            optimizer.zero_grad()
-
-            with torch.cuda.amp.autocast():
-                outputs = model(imgs)
-                loss = criterion(outputs, targets)
-
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-
-            total_loss += loss.item()
-
-        avg_loss = total_loss / len(loader)
-
-        if is_main_process():
-            logger.info(f"Epoch {epoch}: Loss = {avg_loss:.4f}")
-
-        metrics[f"epoch_{epoch}"] = {"loss": avg_loss}
-
-        # Save checkpoint
-        if is_main_process():
-            torch.save(
-                model.module.state_dict(),
-                os.path.join(exp_dir, "checkpoints", f"epoch_{epoch}.pth")
+        if rank == 0:
+            print(
+                f"Epoch {epoch:3d} | "
+                f"train_loss={train_metrics['loss']:.4f} | "
+                f"val_f1={val_metrics.get('f1', 0):.4f} | "
+                f"val_acc={val_metrics.get('accuracy', 0):.4f}"
             )
 
-    # -------------------------
-    # Save metrics
-    # -------------------------
-    if is_main_process():
-        save_metrics(metrics, os.path.join(exp_dir, "metrics.json"))
+            # Early stopping
+            if trainer.should_stop():
+                print(f"Early stopping at epoch {epoch}")
+                break
 
-    cleanup_ddp()
+    if world_size > 1:
+        cleanup_ddp()
+
+    if rank == 0:
+        print(f"\nTraining complete. Results saved to {exp_dir}")
 
 
 if __name__ == "__main__":
