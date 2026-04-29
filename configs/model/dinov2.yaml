@@ -1,0 +1,5 @@
+name: dinov2_vitb14
+pretrained: true
+checkpoint: models/pretrained/dinov2_vitb14.pth
+embedding_dim: 768
+freeze_after_phase1: true

@@ -1,0 +1,39 @@
+image_size: 224
+num_workers: 8
+pin_memory: true
+crops:
+  - Cotton
+  - Sorghum
+  - Chickpea
+  - Mango
+  - Tomato
+  - Mustard
+  - Maize
+  - Brinjal
+  - Soybean
+  - Pigeon_Pea
+num_crops: 10
+pests:  # canonical names
+  - Aphid
+  - Jassid
+  - Whitefly
+  - Mealy_Bug
+  - Thrips
+  - Red_Cotton_Bug
+  - Dusky_Cotton_Bug
+  - Leaf_Roller
+  - Pink_Bollworm
+  - Fall_Army_Worm
+  - Leaf_Miner
+  - Pod_Borer
+  - Hopper
+  - Fruit_Borer
+  - Hairy_Caterpillar
+num_pests: 15
+image_types:
+  - pest_body
+  - symptom
+  - healthy
+train_batch_size: 64
+val_batch_size: 128
+test_batch_size: 128

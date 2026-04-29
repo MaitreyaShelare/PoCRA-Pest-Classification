@@ -1,0 +1,9 @@
+seed: 42
+device: cuda
+data_root: data/processed
+labels_csv: data/splits/labels.csv
+output_dir: outputs
+experiment_name: pest_classification
+log_every_n_steps: 50
+checkpoint_every_n_epochs: 5
+save_best_only: true

@@ -1,0 +1,8 @@
+name: phase2_router
+max_epochs: 30
+patience: 3
+learning_rate: 5e-4
+weight_decay: 1e-4
+scheduler: cosine
+loss: cross_entropy
+optimizer: adamw
