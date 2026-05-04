@@ -1,8 +1,18 @@
-from .classifier import ImageClassifier
+"""Model components: backbones, heads, losses, pipeline."""
 
-# Optional: expose backbones
-# from .backbones.resnet import ResNet50
+from .backbones import DINOv2Backbone
+from .heads import ArcFaceHead, RouterHead, CropHeadsRegistry
+from .losses import ArcFaceLoss, SupConLoss
+from .sam import SAMSegmenter
+from .pipeline import PestClassificationPipeline
 
 __all__ = [
-    "ImageClassifier",
+    "DINOv2Backbone",
+    "ArcFaceHead",
+    "RouterHead",
+    "CropHeadsRegistry",
+    "ArcFaceLoss",
+    "SupConLoss",
+    "SAMSegmenter",
+    "PestClassificationPipeline",
 ]
