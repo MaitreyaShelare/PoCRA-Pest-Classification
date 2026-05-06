@@ -18,6 +18,12 @@ import os
 from pathlib import Path
 import torch
 from omegaconf import OmegaConf
+import warnings
+
+warnings.filterwarnings(
+    "ignore",
+    message="xFormers is not available",
+)
 
 from src.core.config import load_config, save_config, print_config
 from src.core.reproducibility import set_seed
@@ -78,7 +84,7 @@ def main():
     # Create experiment directory (rank 0 only)
     exp_dir = None
     if is_main_process():
-        exp_dir = create_experiment_dir(Path(cfg.output_dir), "phase1_arcface")
+        exp_dir = create_experiment_dir(Path(cfg.paths.output_dir), "phase1_arcface")
         save_config(cfg, exp_dir)
         save_experiment_metadata(exp_dir, cfg)
         print_config(cfg)
@@ -92,51 +98,58 @@ def main():
         print("Loading dataset...")
     
     train_dataset = PestDataset(
-        labels_csv=Path(cfg.labels_csv),
-        data_root=Path(cfg.data_root),
+        labels_csv=Path(cfg.paths.labels_csv),
+        data_root=Path(cfg.paths.data_root),
         split="train",
         transform=get_transforms("train"),
         exclude_ambiguous=True,
     )
     
     val_dataset = PestDataset(
-        labels_csv=Path(cfg.labels_csv),
-        data_root=Path(cfg.data_root),
+        labels_csv=Path(cfg.paths.labels_csv),
+        data_root=Path(cfg.paths.data_root),
         split="val",
         transform=get_transforms("val"),
         exclude_ambiguous=True,
     )
     
+    # train_loader = get_train_dataloader(
+    #     train_dataset,
+    #     batch_size=cfg.data.train_batch_size,
+    #     num_workers=cfg.data.num_workers,
+    # )
+
     train_loader = get_train_dataloader(
-        train_dataset,
-        batch_size=cfg.train_batch_size,
-        num_workers=cfg.num_workers,
+    train_dataset,
+    batch_size=cfg.data.train_batch_size,
+    num_workers=cfg.data.num_workers,
+    drop_last=True,
     )
     
     val_loader = get_val_dataloader(
         val_dataset,
-        batch_size=cfg.val_batch_size,
-        num_workers=cfg.num_workers,
+        batch_size=cfg.data.val_batch_size,
+        num_workers=cfg.data.num_workers,
     )
     
     if is_main_process():
         print(f"  Train: {len(train_dataset)} images")
         print(f"  Val: {len(val_dataset)} images")
-        print(f"  Batch size: {cfg.train_batch_size}\n")
+        print(f"  Batch size: {cfg.data.train_batch_size}\n")
 
     # Build model
     if is_main_process():
         print("Building model...")
     
     backbone = DINOv2Backbone(
-        model_name=cfg.model.name,
-        embedding_dim=cfg.model.embedding_dim,
+        model_name=cfg.model.dinov2.name,
+        embedding_dim=cfg.model.dinov2.embedding_dim,
         freeze_backbone=False,
     ).to(device)
     
     if is_main_process():
-        print(f"  Backbone: {cfg.model.name}")
-        print(f"  Embedding dim: {cfg.model.embedding_dim}\n")
+        print(f"  Backbone: {cfg.model.dinov2.name}")
+        print(f"  Embedding dim: {cfg.model.dinov2.embedding_dim}\n")
 
     # DDP wrap
     if world_size > 1:
@@ -144,7 +157,7 @@ def main():
             backbone,
             device_ids=[local_rank],
             output_device=local_rank,
-            find_unused_parameters=False,
+            find_unused_parameters=True,
         )
 
     # Create trainer
@@ -172,12 +185,25 @@ def main():
     metric_tracker = MetricTracker(["loss", "f1"])
     
     try:
+        # for epoch in range(trainer.start_epoch, cfg.train.phase1.max_epochs):
+        #     # Train
+        #     train_metrics = trainer.train_epoch(train_loader)
         for epoch in range(trainer.start_epoch, cfg.train.phase1.max_epochs):
+
+            # Important for DDP DistributedSampler
+            if hasattr(train_loader.sampler, "set_epoch"):
+                train_loader.sampler.set_epoch(epoch)
+
             # Train
             train_metrics = trainer.train_epoch(train_loader)
             
+            if is_main_process():
+                print("Finished training epoch")
+            
             # Validate
             val_metrics = trainer.validate(val_loader)
+            if is_main_process():
+                print("Finished validation")
             
             # Log metrics
             if is_main_process():

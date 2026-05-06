@@ -51,15 +51,36 @@ scheduler_registry.register("step")(optim.lr_scheduler.StepLR)
 scheduler_registry.register("exponential")(optim.lr_scheduler.ExponentialLR)
 
 
-def get_optimizer(cfg: Any, model: nn.Module) -> optim.Optimizer:
-    """Create optimizer from config."""
+# def get_optimizer(cfg: Any, model: nn.Module) -> optim.Optimizer:
+#     """Create optimizer from config."""
+#     optimizer_class = optimizer_registry.get(cfg.optimizer)
+#     return optimizer_class(
+#         model.parameters(),
+#         lr=cfg.learning_rate,
+#         weight_decay=cfg.weight_decay,
+#     )
+def get_optimizer(cfg: Any, model_or_params) -> optim.Optimizer:
+    """
+    Create optimizer from config.
+
+    Supports:
+    - nn.Module
+    - parameter list
+    """
+
     optimizer_class = optimizer_registry.get(cfg.optimizer)
+
+    # Handle both model and explicit parameter list
+    if hasattr(model_or_params, "parameters"):
+        params = model_or_params.parameters()
+    else:
+        params = model_or_params
+
     return optimizer_class(
-        model.parameters(),
+        params,
         lr=cfg.learning_rate,
         weight_decay=cfg.weight_decay,
     )
-
 
 def get_scheduler(cfg: Any, optimizer: optim.Optimizer) -> optim.lr_scheduler.LRScheduler:
     """Create scheduler from config."""

@@ -1,4 +1,11 @@
-embedding_dim: 768
-margin: 0.5
-scale: 64
-easy_margin: false
+# embedding_dim: 768
+# margin: 0.5
+# scale: 64
+# easy_margin: false
+
+model:
+  arcface:
+    embedding_dim: 768
+    margin: 0.5
+    scale: 64
+    easy_margin: false

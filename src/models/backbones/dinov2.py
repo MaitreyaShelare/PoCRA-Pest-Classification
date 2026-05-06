@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 from typing import Optional
 from src.models.base import BaseBackbone
+from src.distributed.utils import print_once
 
 
 class DINOv2Backbone(BaseBackbone):
@@ -39,7 +40,7 @@ class DINOv2Backbone(BaseBackbone):
         self._freeze_backbone = freeze_backbone
         
         # Load pretrained model
-        print(f"  Loading {model_name} from torch.hub...")
+        print_once(f"  Loading {model_name} from torch.hub...")
         try:
             self.backbone = torch.hub.load(
                 "facebookresearch/dinov2",

@@ -39,17 +39,31 @@ def get_dataloader(
     
     # Distributed sampling (if in DDP mode)
     sampler = None
+    # if "RANK" in os.environ:
+    #     world_size = int(os.environ.get("WORLD_SIZE", 1))
+    #     rank = int(os.environ.get("RANK", 0))
+    #     sampler = DistributedSampler(
+    #         dataset,
+    #         num_replicas=world_size,
+    #         rank=rank,
+    #         shuffle=shuffle,
+    #         seed=42,  # Use config seed if available
+    #     )
+    #     shuffle = False  # DistributedSampler handles shuffle
     if "RANK" in os.environ:
         world_size = int(os.environ.get("WORLD_SIZE", 1))
         rank = int(os.environ.get("RANK", 0))
+
         sampler = DistributedSampler(
             dataset,
             num_replicas=world_size,
             rank=rank,
             shuffle=shuffle,
-            seed=42,  # Use config seed if available
+            seed=42,
+            drop_last=True,
         )
-        shuffle = False  # DistributedSampler handles shuffle
+
+        shuffle = False
 
     return DataLoader(
         dataset,
@@ -63,20 +77,34 @@ def get_dataloader(
     )
 
 
+# def get_train_dataloader(
+#     dataset: Dataset,
+#     batch_size: int,
+#     num_workers: int = 4,
+# ) -> DataLoader:
+#     """Convenience function for training dataloader."""
+#     return get_dataloader(
+#         dataset,
+#         batch_size=batch_size,
+#         split="train",
+#         num_workers=num_workers,
+#         drop_last=True,
+#     )
 def get_train_dataloader(
     dataset: Dataset,
     batch_size: int,
     num_workers: int = 4,
+    drop_last: bool = True,
 ) -> DataLoader:
     """Convenience function for training dataloader."""
+
     return get_dataloader(
         dataset,
         batch_size=batch_size,
         split="train",
         num_workers=num_workers,
-        drop_last=True,
+        drop_last=drop_last,
     )
-
 
 def get_val_dataloader(
     dataset: Dataset,

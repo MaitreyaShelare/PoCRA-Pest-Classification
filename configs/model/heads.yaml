@@ -1,6 +1,16 @@
-pest_mlp_hidden_dim: 256
-crop_embedding_dim: 128
-prototype_dim: 768
-ood_proto_threshold: 0.6
-ood_energy_threshold: -8.0
-ood_mask_threshold: 0.4
+# pest_mlp_hidden_dim: 256
+# crop_embedding_dim: 128
+# prototype_dim: 768
+# ood_proto_threshold: 0.6
+# ood_energy_threshold: -8.0
+# ood_mask_threshold: 0.4
+
+model:
+  heads:
+    pest_mlp_hidden_dim: 256
+    crop_embedding_dim: 128
+    prototype_dim: 768
+
+    ood_proto_threshold: 0.6
+    ood_energy_threshold: -8.0
+    ood_mask_threshold: 0.4

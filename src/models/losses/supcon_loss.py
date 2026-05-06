@@ -46,19 +46,28 @@ class SupConLoss(nn.Module):
         Returns:
             Scalar loss
         """
-        device = (torch.device("cuda") if features.is_cuda else torch.device("cpu"))
+        # device = (torch.device("cuda") if features.is_cuda else torch.device("cpu"))
+        device = features.device
         
         # Handle 2D and 3D inputs
-        if len(features.shape) < 3:
-            raise ValueError("Features should be (batch_size, n_views, feat_dim) or use external views")
+        # if len(features.shape) < 3:
+        #     raise ValueError("Features should be (batch_size, n_views, feat_dim) or use external views")
         
+        # Expect single-view features: (B, D)
+        if len(features.shape) != 2:
+            raise ValueError(
+                "Features should have shape (batch_size, feat_dim)"
+    )
         batch_size = features.shape[0]
         
         # Normalize features
         features = F.normalize(features, dim=-1)
         
         # Compute similarity matrix
-        similarity_matrix = torch.matmul(features, features.T)  # (B, B)
+        # similarity_matrix = torch.matmul(features, features.T)  # (B, B)
+
+        # features = features.squeeze(1)  # (B, 768)
+        similarity_matrix = torch.matmul(features, features.T)
         
         # Diagonal mask: discard self-similarity
         logits_mask = torch.eye(batch_size, dtype=torch.bool, device=device)

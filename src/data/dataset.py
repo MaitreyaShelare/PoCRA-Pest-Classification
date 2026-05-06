@@ -10,6 +10,7 @@ from typing import Tuple, Dict, Optional
 import csv
 from PIL import Image
 import torchvision.transforms as transforms
+from src.distributed.utils import print_once
 
 
 class PestDataset(Dataset):
@@ -59,7 +60,7 @@ class PestDataset(Dataset):
                 # Verify file exists
                 img_path = self.data_root / row["filepath"]
                 if not img_path.exists():
-                    print(f"WARNING: Image not found: {img_path}")
+                    print_once(f"WARNING: Image not found: {img_path}")
                     continue
                 
                 self.samples.append(row)
@@ -81,7 +82,7 @@ class PestDataset(Dataset):
         self.idx_to_pest = {i: p for p, i in self.pest_to_idx.items()}
         self.idx_to_type = {i: t for t, i in self.type_to_idx.items()}
 
-        print(
+        print_once(
             f"Loaded {len(self.samples)} samples ({split})\n"
             f"  Crops: {len(self.crops)}, Pests: {len(self.pests)}, "
             f"Types: {len(self.image_types)}"
@@ -101,7 +102,24 @@ class PestDataset(Dataset):
         
         # Load image
         img_path = self.data_root / sample["filepath"]
-        img = Image.open(img_path).convert("RGB")
+
+        try:
+            img = Image.open(img_path).convert("RGB")
+
+        except Exception as e:
+            raise RuntimeError(
+                f"Corrupted image detected: {img_path}\n{e}"
+            )
+        # img_path = self.data_root / sample["filepath"]
+        # try:
+        #     img = Image.open(img_path).convert("RGB")
+        # except Exception as e:
+        #     print(f"\nSkipping corrupted image: {img_path}")
+        #     print(e)
+
+            # Return next sample
+            return self.__getitem__((idx + 1) % len(self))
+        # img = Image.open(img_path).convert("RGB")
         
         # Apply transforms
         if self.transform:
