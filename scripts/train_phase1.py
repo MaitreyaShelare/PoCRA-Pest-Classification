@@ -80,7 +80,7 @@ def main():
     if is_main_process():
         exp_dir = create_experiment_dir(Path(cfg.output_dir), "phase1_arcface")
         save_config(cfg, exp_dir)
-        save_experiment_metadata(exp_dir)
+        save_experiment_metadata(exp_dir, cfg)
         print_config(cfg)
         print(f"\nPhase 1 Training")
         print(f"  Device: {device}")

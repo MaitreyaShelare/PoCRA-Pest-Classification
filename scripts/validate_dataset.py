@@ -11,7 +11,7 @@ from collections import Counter, defaultdict
 import csv
 
 
-def validate_dataset(dataset_dir: Path) -> Dict[str, any]:
+def validate_dataset(dataset_dir: Path) -> dict[str, any]:
     """
     Validate dataset structure and contents.
     
