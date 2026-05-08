@@ -1,1 +1,1 @@
-python src/cli/train.py
+PYTHONPATH=src python scripts/train.py --phase 1

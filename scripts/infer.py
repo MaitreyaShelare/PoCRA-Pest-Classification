@@ -1,48 +1,44 @@
 """
-Batch inference script for pest classification.
-Predict on test set or directory of images.
+Batch inference script (scripts-first).
+
+Currently supported (reliable) inference mode:
+- **router**: predicts `image_type` (pest_body / symptom / healthy) from a Phase 2 checkpoint.
 
 Usage:
-    # Predict on test split
-    python scripts/infer.py \
+    # Predict image_type on a split (Phase 2 router checkpoint)
+    PYTHONPATH=src python scripts/infer.py \
+        --mode router \
         --config-dir configs \
-        --checkpoint outputs/phase3_crop_heads_20240515/phase3_best.pth \
+        --checkpoint outputs/phase2_*/checkpoint_epoch_*.pth \
         --split test \
-        --output results.csv
-
-    # Predict on directory
-    python scripts/infer.py \
-        --config-dir configs \
-        --checkpoint outputs/phase3_best.pth \
-        --image-dir data/new_images \
-        --output predictions.csv \
-        --batch-size 32
+        --output outputs/router_predictions.csv
 """
 
 import argparse
 from pathlib import Path
+import csv
+
 import torch
+import torch.nn.functional as F
+from tqdm import tqdm
 
 from src.core.config import load_config
 from src.data.dataset import PestDataset
 from src.data.transforms import get_transforms
 from src.data.datamodule import get_val_dataloader
-from src.inference.predict import PestClassificationPredictor
-from src.inference.postprocess import (
-    PredictionFormatter,
-    ConfidenceThresholder,
-    get_acceptance_rate,
-    get_ood_rate,
-)
-from src.eval.metrics import compute_all_metrics
-import numpy as np
-import csv
-from tqdm import tqdm
+from src.models.backbones.dinov2 import DINOv2Backbone
+from src.models.heads.router_head import RouterHead
 
 
 def main():
     parser = argparse.ArgumentParser(
         description="Run inference on pest classification model"
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["router"],
+        default="router",
+        help="Inference mode. `router` loads a Phase 2 checkpoint and predicts image_type.",
     )
     parser.add_argument(
         "--config-dir",
@@ -53,19 +49,13 @@ def main():
         "--checkpoint",
         type=Path,
         required=True,
-        help="Path to model checkpoint",
+        help="Path to model checkpoint (for mode=router: Phase 2 checkpoint)",
     )
     parser.add_argument(
         "--split",
         choices=["train", "val", "test"],
         default="test",
         help="Dataset split to evaluate",
-    )
-    parser.add_argument(
-        "--image-dir",
-        type=Path,
-        default=None,
-        help="Directory with images (alternative to split)",
     )
     parser.add_argument(
         "--output",
@@ -93,81 +83,77 @@ def main():
     cfg = load_config(args.config_dir)
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
-    print(f"\nPest Classification Inference")
+    print(f"\nInference")
+    print(f"  Mode: {args.mode}")
     print(f"  Device: {device}")
     print(f"  Checkpoint: {args.checkpoint}")
-    print(f"  Confidence threshold: {args.confidence_threshold}\n")
+    print(f"\nLoading {args.split} split...")
 
     # Load dataset
-    if args.image_dir:
-        print(f"Loading images from: {args.image_dir}")
-        # Would use BatchPredictor with directory
-    else:
-        print(f"Loading {args.split} split...")
-        dataset = PestDataset(
-            labels_csv=Path(cfg.labels_csv),
-            data_root=Path(cfg.data_root),
-            split=args.split,
-            transform=get_transforms("val"),
-            exclude_ambiguous=True,
-        )
-        print(f"  Total images: {len(dataset)}")
+    dataset = PestDataset(
+        labels_csv=Path(cfg.paths.labels_csv),
+        data_root=Path(cfg.paths.data_root),
+        split=args.split,
+        transform=get_transforms("val"),
+        exclude_ambiguous=True,
+    )
+    print(f"  Total images: {len(dataset)}")
 
-    # Load model (simplified - would load full checkpoint)
-    print(f"Loading checkpoint: {args.checkpoint}")
+    loader = get_val_dataloader(dataset, args.batch_size, num_workers=cfg.data.num_workers)
+
+    # Load model for requested mode
     ckpt = torch.load(args.checkpoint, map_location=device)
-    # Build model from checkpoint...
-    
-    # Create predictor
-    # predictor = PestClassificationPredictor(...)
 
-    # Batch prediction
-    print(f"\nRunning inference...")
-    
-    all_predictions = []
-    all_labels = []
+    if args.mode == "router":
+        backbone = DINOv2Backbone(
+            model_name=cfg.model.dinov2.name,
+            embedding_dim=cfg.model.dinov2.embedding_dim,
+            freeze_backbone=True,
+        ).to(device)
+        router = RouterHead(
+            in_features=cfg.model.dinov2.embedding_dim,
+            num_types=len(cfg.data.image_types),
+        ).to(device)
+        model = torch.nn.Sequential(backbone, router)
+        model.load_state_dict(ckpt["model_state_dict"])
+        model.eval()
 
-    loader = get_val_dataloader(dataset, args.batch_size)
-    
-    with torch.no_grad():
-        for batch in tqdm(loader):
-            images = batch[0].to(device)
-            metadata = batch[1]
-            
-            crop_names = metadata["crop"]
-            
-            # Would call: batch_results = predictor.predict_batch(images, crop_names)
-            
-            all_labels.extend(metadata["pest_idx"].numpy())
+        idx_to_type = {i: t for i, t in enumerate(cfg.data.image_types)}
 
-    # Apply confidence thresholding
-    thresholder = ConfidenceThresholder(args.confidence_threshold)
-    # all_predictions = thresholder.apply_batch(all_predictions)
+        rows = []
+        with torch.no_grad():
+            for images, meta in tqdm(loader, desc="Infer (router)"):
+                images = images.to(device, non_blocking=True)
+                logits = model(images)
+                probs = F.softmax(logits, dim=1)
+                pred_idx = probs.argmax(dim=1)
+                conf = probs.max(dim=1).values
 
-    # Save results
+                for fp, crop, pi, c in zip(
+                    meta["filepath"],
+                    meta["crop"],
+                    pred_idx.detach().cpu().tolist(),
+                    conf.detach().cpu().tolist(),
+                ):
+                    rows.append(
+                        {
+                            "filepath": fp,
+                            "crop": crop,
+                            "image_type_pred": idx_to_type.get(pi, "unknown"),
+                            "confidence": float(c),
+                        }
+                    )
+
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    
-    # Would write to CSV here
-    print(f"\nResults saved to: {args.output}")
+    with open(args.output, "w", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["filepath", "crop", "image_type_pred", "confidence"],
+        )
+        writer.writeheader()
+        writer.writerows(rows)
 
-    # Print summary
-    print(f"\nSummary")
-    print(f"  Total predictions: {len(all_predictions)}")
-    print(f"  Accepted: {sum(1 for p in all_predictions if not p.get('rejected'))}")
-    print(f"  Acceptance rate: {get_acceptance_rate(all_predictions):.1%}")
-    print(f"  OOD detected: {sum(1 for p in all_predictions if p.get('is_ood'))}")
-    print(f"  OOD rate: {get_ood_rate(all_predictions):.1%}")
-
-    # If ground truth available, compute metrics
-    if args.split != "test":
-        print(f"\nMetrics")
-        predictions = np.array([p.get("pest_idx", -1) for p in all_predictions])
-        labels = np.array(all_labels)
-        
-        metrics = compute_all_metrics(predictions, labels)
-        print(f"  Accuracy: {metrics['accuracy']:.4f}")
-        print(f"  Macro F1: {metrics['macro_f1']:.4f}")
-        print(f"  Weighted F1: {metrics['weighted_f1']:.4f}")
+    print(f"\nSaved: {args.output} ({len(rows)} rows)")
 
 
 if __name__ == "__main__":
