@@ -60,7 +60,7 @@ def get_dataloader(
             rank=rank,
             shuffle=shuffle,
             seed=42,
-            drop_last=True,
+            drop_last=(split == "train"),
         )
 
         shuffle = False
