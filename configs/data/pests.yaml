@@ -80,11 +80,18 @@ data:
     - pest_body
     - symptom
     - healthy
+
   # 2 GPUs
   # train_batch_size: 64
   # val_batch_size: 128
   # test_batch_size: 128
-  # 4 GPUs
-  train_batch_size: 64
-  val_batch_size: 128
-  test_batch_size: 128
+
+  # # 4 GPUs
+  # train_batch_size: 16
+  # val_batch_size: 4
+  # test_batch_size: 4
+
+  # 1 GPUs (WORKING)
+  train_batch_size: 16
+  val_batch_size: 4
+  test_batch_size: 4

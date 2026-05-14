@@ -99,7 +99,10 @@ class ArcFaceHead(nn.Module):
         
         # Compute sine from cosine: sin(θ) = sqrt(1 - cos²(θ))
         # Use clamp to avoid NaN from negative values
-        sine = torch.sqrt((1.0 - torch.pow(cosine, 2)).clamp(0, 1))
+        
+        # sine = torch.sqrt((1.0 - torch.pow(cosine, 2)).clamp(0, 1))
+
+        sine = torch.sqrt(torch.clamp((1.0 - torch.pow(cosine, 2)),1e-9,1))
         
         # Apply angular margin: cos(θ + m) = cos(θ)*cos(m) - sin(θ)*sin(m)
         phi = cosine * self.cos_m - sine * self.sin_m

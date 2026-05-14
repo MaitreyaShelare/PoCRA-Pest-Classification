@@ -153,7 +153,8 @@ class Phase1Trainer(BaseTrainer):
                 set_to_none=True,
             )
 
-            with autocast("cuda"):
+            # with autocast("cuda"):
+            with autocast(device_type='cuda'):
 
                 # Forward
                 embeddings = self.model(images)
@@ -335,7 +336,8 @@ class Phase1Trainer(BaseTrainer):
                 images = images[valid_mask]
                 species_idx = species_idx[valid_mask]
 
-                with autocast():
+                # with autocast():
+                with autocast(device_type='cuda'):
 
                     # Forward
                     embeddings = self.model(images)
