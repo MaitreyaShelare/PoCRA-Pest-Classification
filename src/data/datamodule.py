@@ -39,18 +39,9 @@ def get_dataloader(
     
     # Distributed sampling (if in DDP mode)
     sampler = None
+
     # if "RANK" in os.environ:
-    #     world_size = int(os.environ.get("WORLD_SIZE", 1))
-    #     rank = int(os.environ.get("RANK", 0))
-    #     sampler = DistributedSampler(
-    #         dataset,
-    #         num_replicas=world_size,
-    #         rank=rank,
-    #         shuffle=shuffle,
-    #         seed=42,  # Use config seed if available
-    #     )
-    #     shuffle = False  # DistributedSampler handles shuffle
-    if "RANK" in os.environ:
+    if "RANK" in os.environ and split == "train":
         world_size = int(os.environ.get("WORLD_SIZE", 1))
         rank = int(os.environ.get("RANK", 0))
 
@@ -60,7 +51,9 @@ def get_dataloader(
             rank=rank,
             shuffle=shuffle,
             seed=42,
-            drop_last=(split == "train"),
+            # drop_last=drop_last,
+            drop_last=True,
+            # drop_last=(split == "train"),
         )
 
         shuffle = False
@@ -72,7 +65,9 @@ def get_dataloader(
         shuffle=shuffle,
         num_workers=num_workers,
         pin_memory=pin_memory,
-        drop_last=drop_last and (split == "train"),
+        # drop_last=drop_last and (split == "train"),
+        drop_last=drop_last,
+        # persistent_workers=False,
         persistent_workers=(num_workers > 0),
     )
 
@@ -106,18 +101,34 @@ def get_train_dataloader(
         drop_last=drop_last,
     )
 
+# def get_val_dataloader(
+#     dataset: Dataset,
+#     batch_size: int,
+#     num_workers: int = 4,
+# ) -> DataLoader:
+#     """Convenience function for validation dataloader."""
+#     return get_dataloader(
+#         dataset,
+#         batch_size=batch_size,
+#         split="val",
+#         num_workers=num_workers,
+#         drop_last=True,
+#     )
+
 def get_val_dataloader(
     dataset: Dataset,
     batch_size: int,
     num_workers: int = 4,
+    drop_last: bool = True,
 ) -> DataLoader:
     """Convenience function for validation dataloader."""
+    
     return get_dataloader(
         dataset,
         batch_size=batch_size,
         split="val",
         num_workers=num_workers,
-        drop_last=False,
+        drop_last=drop_last,
     )
 
 

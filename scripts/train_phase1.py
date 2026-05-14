@@ -17,8 +17,10 @@ import argparse
 import os
 from pathlib import Path
 import torch
+from torch.utils.data import Subset
 from omegaconf import OmegaConf
 import warnings
+import torch.multiprocessing as mp
 
 warnings.filterwarnings(
     "ignore",
@@ -36,7 +38,7 @@ from src.models.backbones.dinov2 import DINOv2Backbone
 from src.models.losses.arcface_loss import ArcFaceLoss
 from src.train.phase1 import Phase1Trainer
 from src.distributed.setup import setup_ddp, cleanup_ddp
-from src.distributed.utils import is_main_process
+# from src.distributed.utils import is_main_process
 from src.eval.metrics import MetricTracker
 
 
@@ -104,6 +106,16 @@ def main():
         transform=get_transforms("train"),
         exclude_ambiguous=True,
     )
+
+    train_indices = [
+        i for i, sample in enumerate(train_dataset.samples)
+        if sample.get("species_id") not in [None, "", "None"]
+    ]
+
+    train_dataset = Subset(
+        train_dataset,
+        train_indices,
+    )
     
     val_dataset = PestDataset(
         labels_csv=Path(cfg.paths.labels_csv),
@@ -112,12 +124,17 @@ def main():
         transform=get_transforms("val"),
         exclude_ambiguous=True,
     )
+
+    val_indices = [
+        i for i, sample in enumerate(val_dataset.samples)
+        if sample.get("species_id") not in [None, "", "None"]
+    ]
+
+    val_dataset = Subset(
+        val_dataset,
+        val_indices,
+    )
     
-    # train_loader = get_train_dataloader(
-    #     train_dataset,
-    #     batch_size=cfg.data.train_batch_size,
-    #     num_workers=cfg.data.num_workers,
-    # )
 
     train_loader = get_train_dataloader(
     train_dataset,
@@ -130,6 +147,7 @@ def main():
         val_dataset,
         batch_size=cfg.data.val_batch_size,
         num_workers=cfg.data.num_workers,
+        drop_last=True,
     )
     
     if is_main_process():
@@ -151,14 +169,23 @@ def main():
         print(f"  Backbone: {cfg.model.dinov2.name}")
         print(f"  Embedding dim: {cfg.model.dinov2.embedding_dim}\n")
 
+    # Separate non-DDP validation model
+    if is_main_process():
+        val_backbone = DINOv2Backbone(
+            model_name=cfg.model.dinov2.name,
+            embedding_dim=cfg.model.dinov2.embedding_dim,
+            freeze_backbone=False,
+            ).to(device)
+
     # DDP wrap
     if world_size > 1:
-        backbone = torch.nn.parallel.DistributedDataParallel(
-            backbone,
+        backbone.backbone = torch.nn.parallel.DistributedDataParallel(
+            backbone.backbone,
             device_ids=[local_rank],
             output_device=local_rank,
             find_unused_parameters=True,
-        )
+
+)
 
     # Create trainer
     trainer = Phase1Trainer(
@@ -169,6 +196,16 @@ def main():
         rank=rank,
         world_size=world_size,
     )
+
+    if is_main_process():
+        val_trainer = Phase1Trainer(
+            cfg=cfg,
+            model=val_backbone,
+            device=device,
+            output_dir=exp_dir,
+            rank=0,
+            world_size=1,
+        )
 
     # Resume checkpoint if provided
     if args.resume_from:
@@ -185,25 +222,40 @@ def main():
     metric_tracker = MetricTracker(["loss", "f1"])
     
     try:
-        # for epoch in range(trainer.start_epoch, cfg.train.phase1.max_epochs):
-        #     # Train
-        #     train_metrics = trainer.train_epoch(train_loader)
         for epoch in range(trainer.start_epoch, cfg.train.phase1.max_epochs):
 
             # Important for DDP DistributedSampler
             if hasattr(train_loader.sampler, "set_epoch"):
                 train_loader.sampler.set_epoch(epoch)
 
+            if is_main_process():
+                print(f"\nStarting epoch {epoch}", flush=True)
+            
             # Train
             train_metrics = trainer.train_epoch(train_loader)
             
+            # if is_main_process():
+            #     print("Finished training epoch")
+
             if is_main_process():
-                print("Finished training epoch")
+                val_backbone.backbone.load_state_dict(
+                    backbone.backbone.module.state_dict()
+                )
             
             # Validate
-            val_metrics = trainer.validate(val_loader)
             if is_main_process():
-                print("Finished validation")
+                val_metrics = val_trainer.validate(val_loader)
+            else:
+                val_metrics = {
+                    "loss": 0.0,
+                    "f1": 0.0,
+                }
+            if world_size > 1:
+                torch.distributed.barrier()
+            # val_metrics = trainer.validate(val_loader)
+
+            # if is_main_process():
+            #     print("Finished validation")
             
             # Log metrics
             if is_main_process():
@@ -262,5 +314,8 @@ def main():
         print(f"Results saved to: {exp_dir}")
 
 
+# if __name__ == "__main__":
+#     main()
 if __name__ == "__main__":
+    mp.set_start_method("spawn", force=True)
     main()

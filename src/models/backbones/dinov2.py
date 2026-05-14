@@ -84,16 +84,43 @@ class DINOv2Backbone(BaseBackbone):
         """Get embedding dimension."""
         return self.embedding_dim
     
+    # def freeze(self) -> None:
+    #     """Freeze all parameters."""
+    #     self._freeze_backbone = True
+    #     for param in self.backbone.parameters():
+    #         param.requires_grad = False
     def freeze(self) -> None:
         """Freeze all parameters."""
+        
         self._freeze_backbone = True
-        for param in self.backbone.parameters():
+
+        module = (
+            self.backbone.module
+            if hasattr(self.backbone, "module")
+            else self.backbone
+        )
+
+        for param in module.parameters():
             param.requires_grad = False
-    
+
+    # def unfreeze(self) -> None:
+    #     """Unfreeze all parameters."""
+    #     self._freeze_backbone = False
+    #     for param in self.backbone.parameters():
+    #         param.requires_grad = True
+
     def unfreeze(self) -> None:
         """Unfreeze all parameters."""
+        
         self._freeze_backbone = False
-        for param in self.backbone.parameters():
+
+        module = (
+            self.backbone.module
+            if hasattr(self.backbone, "module")
+            else self.backbone
+        )
+
+        for param in module.parameters():
             param.requires_grad = True
     
     def is_frozen(self) -> bool:
